@@ -1,0 +1,22 @@
+services:
+  sureti-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sureti-validaciones-api
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      - MONGO_URL=${MONGO_URL}
+      - MONGO_DB_NAME=${MONGO_DB_NAME:-sureti}
+      - MONGO_COLLECTION_LEADS=${MONGO_COLLECTION_LEADS:-leads}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "sureti.service=validaciones-api"
+      - "sureti.port=8000"
