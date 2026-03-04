@@ -466,16 +466,23 @@ def _persist_validation_result(
     if extra_set:
         set_payload.update(extra_set)
 
+    # Paso 1: garantizar documento base sin mezclar rutas padre/hijo en el mismo update.
+    collection.update_one(
+        {"lead_id": lead_id},
+        {"$setOnInsert": default_doc},
+        upsert=True,
+    )
+
+    # Paso 2: aplicar actualizacion de validaciones y trazabilidad.
     collection.update_one(
         {"lead_id": lead_id},
         {
-            "$setOnInsert": default_doc,
             "$set": set_payload,
             "$push": {
                 "historial": _append_history("validando", action, detail)
             },
         },
-        upsert=True,
+        upsert=False,
     )
     return {"persistido": True, "campos_actualizados": updated_paths}
 
