@@ -410,6 +410,27 @@ def _append_history(
     }
 
 
+def _should_refresh_identity(lead: dict[str, Any]) -> bool:
+    validaciones = _as_dict(lead.get("validaciones"))
+    identidad = _as_dict(validaciones.get("identidad"))
+    estado = _pick_str(identidad.get("estado")).lower()
+
+    # Si no se ha ejecutado o quedo pendiente/error, intentar de nuevo.
+    if estado in {"", "pendiente", "error"}:
+        return True
+    if estado != "completado":
+        return True
+
+    # Si no hay evidencia de consulta real OFAC/ONU, volver a consultar.
+    listas = _as_dict(identidad.get("listas_restrictivas"))
+    ofac = _as_dict(listas.get("ofac"))
+    onu = _as_dict(listas.get("onu"))
+    ofac_estado = _pick_str(ofac.get("estado")).lower()
+    onu_estado = _pick_str(onu.get("estado")).lower()
+
+    return not (ofac_estado == "consultado" and onu_estado == "consultado")
+
+
 def _persist_validation_result(
     lead_id: str,
     celular: str,
@@ -572,12 +593,43 @@ async def listar_leads(
         }
 
     docs = list(collection.find({}, {"_id": 0}).sort("updated_at", -1).limit(limit))
+    identity_refreshed = 0
+    policies_refreshed = 0
     if refresh:
         for doc in docs:
             lead_id = _pick_str(doc.get("lead_id"))
             celular = _pick_str(_as_dict(doc.get("contacto")).get("celular"), lead_id)
             if not lead_id:
                 continue
+
+            persona = _as_dict(doc.get("persona"))
+            cedula = _pick_str(persona.get("cedula"), doc.get("cedula"), doc.get("documento"))
+
+            if cedula and _should_refresh_identity(doc):
+                identity_result = validar_identidad(
+                    IdentityRequest(
+                        lead_id=lead_id,
+                        celular=celular,
+                        cedula=cedula,
+                    )
+                )
+                _persist_validation_result(
+                    lead_id=lead_id,
+                    celular=celular,
+                    validation_key="identidad",
+                    validation_result=identity_result,
+                    action="Refresh identidad por consulta de dashboard",
+                    detail=f"resultado={identity_result.get('resultado', identity_result.get('estado'))}",
+                    extra_set={
+                        "persona.cedula": cedula,
+                        "etapa": "validacion_identidad",
+                    },
+                )
+                validaciones = _as_dict(doc.get("validaciones"))
+                validaciones["identidad"] = identity_result
+                doc["validaciones"] = validaciones
+                identity_refreshed += 1
+
             politicas_doc, decision_doc, prioridad = _apply_policy_on_lead(doc)
             _persist_validation_result(
                 lead_id=lead_id,
@@ -594,6 +646,7 @@ async def listar_leads(
                     "puntaje_lead": decision_doc.get("score_riesgo", 0),
                 },
             )
+            policies_refreshed += 1
         docs = list(collection.find({}, {"_id": 0}).sort("updated_at", -1).limit(limit))
 
     return {
@@ -601,6 +654,8 @@ async def listar_leads(
         "meta": {
             "total": len(docs),
             "refresh": refresh,
+            "identity_refreshed": identity_refreshed,
+            "policies_refreshed": policies_refreshed,
             "timestamp": _now_iso(),
             "estructura": "produccion_whatsapp_v1",
         },
